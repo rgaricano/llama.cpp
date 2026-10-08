@@ -222,26 +222,21 @@ if (GGML_SYCL_DEVICE_ARCH)
         -fsycl-max-parallel-link-jobs=${GGML_SYCL_MAX_PARALLEL_LINK_JOBS}
     )
 
-    # The XMX dequant-GEMM tiles need the sub-group size of the target: 8 on Xe-HPG (DG2, ARL-H),
-    # 16 on Xe-HPC and Xe2 or newer. ocloc fails on the other size, so build only the one that fits.
-    # 0 (unknown name, mixed list, or no XMX) builds no XMX tile and the path stays off.
-    set(_ggml_sycl_xmx_sg "")
-    string(TOLOWER "${GGML_SYCL_DEVICE_ARCH}" _ggml_sycl_archs)
-    string(REPLACE "," ";" _ggml_sycl_archs "${_ggml_sycl_archs}")
-    foreach(_arch IN LISTS _ggml_sycl_archs)
-        if (_arch MATCHES "^(dg2|acm|ats-m|arl-h|xe-hpg|12\\.5[567]\\.|12\\.74\\.)")
-            set(_sg 8)
-        elseif (_arch MATCHES "^(pvc|bmg|lnl|ptl|wcl|nvl|cri|xe2|xe3|xe-hpc|12\\.60\\.|20\\.|30\\.)")
-            set(_sg 16)
-        else()
-            set(_sg 0)
-        endif()
-        if (_ggml_sycl_xmx_sg STREQUAL "" OR _ggml_sycl_xmx_sg EQUAL _sg)
-            set(_ggml_sycl_xmx_sg ${_sg})
-        else()
-            set(_ggml_sycl_xmx_sg 0)
+    # The PQ2_0/PTQ1_0 XMX kernels (pq2_xmx.cpp) need 16-wide DPAS and 2D block loads, and AOT compiles them for
+    # every listed device, so they are only built when all of them are Xe-HPC, Xe2 or later. Otherwise those
+    # types keep the existing paths.
+    string(REPLACE "," ";" _ggml_sycl_aot_devices "${GGML_SYCL_DEVICE_ARCH}")
+    set(_ggml_sycl_pq2_xmx ON)
+    foreach (_ggml_sycl_dev IN LISTS _ggml_sycl_aot_devices)
+        string(STRIP "${_ggml_sycl_dev}" _ggml_sycl_dev)
+        string(TOLOWER "${_ggml_sycl_dev}" _ggml_sycl_dev)
+        # the -vg parts of Xe-HPC have no XMX
+        if (NOT _ggml_sycl_dev MATCHES "^(pvc|bmg|lnl|ptl|wcl|nvl|cri|xe-hpc|xe2|xe3)" OR _ggml_sycl_dev MATCHES "-vg")
+            set(_ggml_sycl_pq2_xmx OFF)
         endif()
     endforeach()
-    message(STATUS "GGML_SYCL_DEVICE_ARCH: XMX dequant-GEMM sub-group size ${_ggml_sycl_xmx_sg} (0 = off)")
-    target_compile_definitions(ggml-sycl PRIVATE GGML_SYCL_XMX_AOT_SG=${_ggml_sycl_xmx_sg})
+    if (NOT _ggml_sycl_pq2_xmx)
+        message(STATUS "GGML_SYCL_DEVICE_ARCH includes a device without 16-wide DPAS, not building the PQ2_0/PTQ1_0 XMX path")
+        set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/pq2_xmx.cpp APPEND PROPERTY COMPILE_DEFINITIONS GGML_SYCL_NO_PQ2_XMX)
+    endif()
 endif()
